@@ -1,0 +1,14 @@
+
+{
+	"namespace": "feature.powershell.systemcheck",
+	"items": {
+		"includes": [
+			{
+				"name": "systemcheck",
+				"path": "/sitecore/system/Modules/PowerShell/Script Library/System Check",
+				"scope": "ItemAndDescendants",
+				"allowedPushOperations": "CreateUpdateAndDelete",
+			}
+		]
+	}
+}

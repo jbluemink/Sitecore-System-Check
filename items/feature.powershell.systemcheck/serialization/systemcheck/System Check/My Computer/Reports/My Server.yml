@@ -1,0 +1,254 @@
+﻿---
+ID: "d08c30dc-afc3-4720-be17-7e7162edcf57"
+Parent: "ede1b60d-cf8c-44be-af6b-58a0ecbfd4c6"
+Template: "dd22f1b3-bd87-4db2-9e7d-f7a496888d43"
+Path: /sitecore/system/Modules/PowerShell/Script Library/System Check/My Computer/Reports/My Server
+SharedFields:
+- ID: "06d5295c-ed2f-4a54-9bf2-26228d113318"
+  Hint: __Icon
+  Value: Apps/32x32/Computer.png
+- ID: "b1a94ff0-6897-47c0-9c51-aa6acb80b1f0"
+  Hint: Script
+  Value: |
+    Import-Function -Name Invoke-SqlCommand
+    $masterconnection = [Sitecore.Configuration.Settings]::GetConnectionString("master")
+    
+    function Get-Resources{  
+        param(  
+        $computername =$env:computername 
+        )  
+        # Processor utilization 
+        #Get-WmiObject -ComputerName $computer -Class win32_processor -ErrorAction Stop | Measure-Object -Property LoadPercentage -Average | Select-Object * 
+        $cpu = gwmi win32_perfformatteddata_perfos_processor -ComputerName $computername| ? {$_.name -eq "_total"} | select -ExpandProperty PercentProcessorTime  -ea silentlycontinue  
+        # Memory utilization 
+        $ComputerMemory = Get-WmiObject -ComputerName $computername  -Class win32_operatingsystem -ErrorAction Stop 
+        $Memory = ((($ComputerMemory.TotalVisibleMemorySize - $ComputerMemory.FreePhysicalMemory)*100)/ $ComputerMemory.TotalVisibleMemorySize) 
+        $RoundMemory = [math]::Round($Memory, 2) 
+        $TotalMem = $ComputerMemory.TotalVisibleMemorySize
+        # Free disk space 
+        $disks = get-wmiobject -class "Win32_LogicalDisk" -namespace "root\CIMV2" -computername $computername
+        $results = foreach ($disk in $disks)  
+        { 
+        if ($disk.Size -gt 0) 
+        { 
+          $size = [math]::round($disk.Size/1GB, 0) 
+          $free = [math]::round($disk.FreeSpace/1GB, 0) 
+          [PSCustomObject]@{ 
+          Drive = $disk.Name 
+          Name = $disk.VolumeName 
+          "Total Disk Size" = $size
+          "Free Disk Size" = "{0:N0} ({1:P0})" -f $free, ($free/$size) 
+          } } }     
+    
+          # Write results 
+          return "Resources on ${computername} - Total RAM:$TotalMem RAM Usage:${RoundMemory}%, CPU:$cpu%, Free DiskSpace $free GB"
+    }
+    
+    function GetDatabaseInfo{  
+     $reportItems = @()
+     $query = @"
+    SELECT file_id, name, type_desc, physical_name, size, max_size  FROM sys.database_files
+    "@
+     $records = Invoke-SqlCommand -Connection $masterconnection -Query $query
+    
+      foreach ($rec in $records)
+      {
+        Write-Host "rec"+ $rec.size
+          $reportItem = [PSCustomObject]@{
+        "Name"= "Master Database $($rec.name) size"
+        "Value" = $rec.size
+      }
+        $reportItems += $reportItem
+          $reportItem = [PSCustomObject]@{
+        "Name"= "Master Database $($rec.name) max size"
+        "Value" = $rec.max_size 
+      }
+       $reportItems += $reportItem
+          $reportItem = [PSCustomObject]@{
+        "Name"= "Master Database $($rec.name) path "
+        "Value" = $rec.physical_name
+      }
+       $reportItems += $reportItem
+      }
+     return $reportItems
+    }
+    
+    function GetDatabaseItemsInfo{  
+     $reportItems = @()
+     $query = @"
+    SELECT count(*) as count FROM Items
+    "@
+     $records = Invoke-SqlCommand -Connection $masterconnection -Query $query
+    
+      foreach ($rec in $records)
+      {
+         $reportItem = [PSCustomObject]@{
+        "Name"= "Master Database Items Count"
+        "Value" = $rec.count
+      }
+        $reportItems += $reportItem
+      }
+     return $reportItems
+    }
+    
+    function GetDatabaseMediaInfo{  
+     $reportItems = @()
+     $query = @"
+    SELECT SUM(CAST([Value] as INT)) as size, count(*) as count FROM [SharedFields] WHERE FieldId = '6954B7C7-2487-423F-8600-436CB3B6DC0E'
+    "@
+     $records = Invoke-SqlCommand -Connection $masterconnection -Query $query
+    
+      foreach ($rec in $records)
+      {
+         $reportItem = [PSCustomObject]@{
+        "Name"= "Master Database Unversioned Media Size (byte)"
+        "Value" = $rec.size
+        }
+        $reportItems += $reportItem
+    $reportItem = [PSCustomObject]@{
+        "Name"= "Master Database Unversioned Media Record Count"
+        "Value" = $rec.count
+        }
+        $reportItems += $reportItem
+      }
+     return $reportItems
+    }
+    
+    function GetDatabaseBlobsInfo{  
+     $reportItems = @()
+     $query = @"
+    EXEC sp_spaceused N'dbo.Blobs';
+    "@
+     $records = Invoke-SqlCommand -Connection $masterconnection -Query $query
+    
+      foreach ($rec in $records)
+      {
+          $reportItem = [PSCustomObject]@{
+        "Name"= "Master Database Blob count / rows"
+        "Value" = $rec.rows
+      }
+       $reportItems += $reportItem
+          $reportItem = [PSCustomObject]@{
+        "Name"= "Master Database Blob size"
+        "Value" = $rec.data
+      }
+       $reportItems += $reportItem
+      }
+     return $reportItems
+    }
+    
+    function CheckSystem()
+    {
+      $reportItems = @()
+    
+      $sitecoreversioninfo = [Sitecore.Configuration.About]::VersionInformation()
+      $reportItem = [PSCustomObject]@{
+       "Name"= "Sitecore Version"
+       "Value" = $sitecoreversioninfo 
+      }
+      $reportItems += $reportItem
+    
+      $sumary= Get-Resources
+      $reportItem = [PSCustomObject]@{
+       "Name"= "Computer Summary"
+       "Value" = $sumary
+      }
+       $reportItems += $reportItem
+     
+       $reportItems += GetDatabaseInfo
+       $reportItems += GetDatabaseItemsInfo
+       $reportItems += GetDatabaseMediaInfo
+       $reportItems += GetDatabaseBlobsInfo
+    
+      $totalLogicalCores = (
+       (Get-CimInstance -ClassName Win32_Processor).NumberOfLogicalProcessors |
+       Measure-Object -Sum
+       ).Sum
+    
+      $reportItem = [PSCustomObject]@{
+       "Name"= "Server Total Logical Cores"
+       "Value" = $totalLogicalCores 
+      }
+      $reportItems += $reportItem
+    
+      $ram = (Get-CimInstance Win32_PhysicalMemory | Measure-Object -Property capacity -Sum).sum /1gb
+      $reportItem = [PSCustomObject]@{
+       "Name"= "Server Ram (GB)"
+       "Value" = $ram
+      }
+      $reportItems += $reportItem
+    
+      $info = Get-ComputerInfo
+      $info.PSObject.Properties | ForEach-Object {
+        if ($_.value) {
+        $reportItem = [PSCustomObject]@{
+         "Name"= "Computer "+$_.name
+         "Value" = $_.value
+        }
+        $reportItems += $reportItem
+      }}
+    
+      $process = Get-WmiObject -ComputerName localhost -Class Win32_Process | 
+        Sort-Object WS -Descending | 
+        Select-Object -First 1
+      $process.PSObject.Properties | ForEach-Object {
+      if ($_.value) {
+        $reportItem = [PSCustomObject]@{
+         "Name"=  "Process "+$_.name
+         "Value" = $_.value
+        }
+        $reportItems += $reportItem
+      }}
+    
+      return $reportItems
+    }
+    
+    $reportProps = @{
+        Property = @(
+            "Name",
+            "Value"
+        )
+        Title = "System Server report"
+        InfoTitle = "What server are you running"
+        InfoDescription = "View server Main Characteristics"
+        ViewName = "SystemCheck"
+    }
+    
+    $reportItems = @()
+    $reportItems += CheckSystem
+    
+    
+    $reportItems | 
+      Show-ListView @reportProps -ActionData ""
+     
+    Close-Window
+Languages:
+- Language: en
+  Fields:
+  - ID: "b5e02ad9-d56f-4c41-a065-a133db87bdeb"
+    Hint: __Display name
+    Value: 
+  Versions:
+  - Version: 1
+    Fields:
+    - ID: "25bed78c-4957-4165-998a-ca1b52f67497"
+      Hint: __Created
+      Value: 20230320T073814Z
+    - ID: "52807595-0f8f-4b20-8d2a-cb71d28c6103"
+      Hint: __Owner
+      Value: |
+        sitecore\Admin
+    - ID: "5dd74568-4d4b-44c1-b513-0af5f4cda34f"
+      Hint: __Created by
+      Value: |
+        sitecore\Admin
+    - ID: "8cdc337e-a112-42fb-bbb4-4143751e123f"
+      Hint: __Revision
+      Value: "f0e23482-338d-45cb-ad30-1e44b84c2cef"
+    - ID: "badd9cf9-53e0-4d0c-bcc0-2d784c282f6a"
+      Hint: __Updated by
+      Value: |
+        sitecore\jbluemink@uxbee.nl
+    - ID: "d9cf14b1-fa16-4ba6-9288-e8a174d4d522"
+      Hint: __Updated
+      Value: 20240903T203935Z
